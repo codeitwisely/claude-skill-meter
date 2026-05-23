@@ -1,0 +1,11 @@
+{
+  "name": "claude-skill-meter",
+  "description": "Track tool-call activity and estimate session cost across Claude Code skill invocations",
+  "version": "0.1.0",
+  "author": {
+    "name": "CodeItWisely",
+    "url": "https://codeitwisely.ai"
+  },
+  "repository": "https://github.com/codeitwisely/claude-skill-meter",
+  "license": "MIT"
+}

@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# claude-skill-meter — session cost report
+#
+# Usage:
+#   csm-report              # current session
+#   csm-report --all        # all archived sessions
+#   csm-report --clear      # archive current and start fresh
+
+set -euo pipefail
+
+SESSION_DIR="${CSM_SESSION_DIR:-${HOME}/.claude-skill-meter}"
+CURRENT="${SESSION_DIR}/current.jsonl"
+PRICING_FILE="${CSM_PRICING:-${SESSION_DIR}/pricing.json}"
+PLUGIN_PRICING="$(cd "$(dirname "$0")/.." && pwd)/config/pricing.json"
+
+# ── Flags ────────────────────────────────────────────────────────────────────
+MODE="current"
+[[ "${1:-}" == "--all" ]]   && MODE="all"
+[[ "${1:-}" == "--clear" ]] && MODE="clear"
+
+if [[ "$MODE" == "clear" ]]; then
+  if [[ -f "$CURRENT" ]]; then
+    archive="${SESSION_DIR}/session-$(date +%Y%m%d-%H%M%S).jsonl"
+    mv "$CURRENT" "$archive"
+    echo "Session archived → $archive"
+  else
+    echo "No active session to clear."
+  fi
+  exit 0
+fi
+
+# ── Resolve data file(s) ─────────────────────────────────────────────────────
+if [[ "$MODE" == "all" ]]; then
+  DATAFILES=$(ls "${SESSION_DIR}"/session-*.jsonl "${CURRENT}" 2>/dev/null || true)
+else
+  DATAFILES="$CURRENT"
+fi
+
+if [[ -z "${DATAFILES:-}" ]] || ! ls $DATAFILES 2>/dev/null | grep -q .; then
+  echo "No session data found. Run a Claude Code skill first."
+  exit 0
+fi
+
+# ── Load pricing ─────────────────────────────────────────────────────────────
+if [[ -f "$PRICING_FILE" ]]; then
+  INPUT_COST=$(jq -r '.input_per_1m  // "3.00"' "$PRICING_FILE")
+  OUTPUT_COST=$(jq -r '.output_per_1m // "15.00"' "$PRICING_FILE")
+  MODEL=$(jq -r '.model // "custom"' "$PRICING_FILE")
+elif [[ -f "$PLUGIN_PRICING" ]]; then
+  INPUT_COST=$(jq -r '.input_per_1m  // "3.00"' "$PLUGIN_PRICING")
+  OUTPUT_COST=$(jq -r '.output_per_1m // "15.00"' "$PLUGIN_PRICING")
+  MODEL=$(jq -r '.model // "claude-sonnet"' "$PLUGIN_PRICING")
+else
+  INPUT_COST="3.00"
+  OUTPUT_COST="15.00"
+  MODEL="claude-sonnet (default)"
+fi
+
+# ── Aggregate ─────────────────────────────────────────────────────────────────
+TOTAL_CALLS=$(cat $DATAFILES 2>/dev/null | wc -l)
+TOTAL_INPUT=$(cat $DATAFILES 2>/dev/null | jq -s 'map(.input_len) | add // 0')
+TOTAL_OUTPUT=$(cat $DATAFILES 2>/dev/null | jq -s 'map(.output_len) | add // 0')
+
+INPUT_TOKENS=$(( TOTAL_INPUT  / 4 ))
+OUTPUT_TOKENS=$(( TOTAL_OUTPUT / 4 ))
+
+# Float math via bc
+COST=$(echo "scale=4; ($INPUT_TOKENS * $INPUT_COST / 1000000) + ($OUTPUT_TOKENS * $OUTPUT_COST / 1000000)" | bc 2>/dev/null || echo "N/A")
+
+# ── Output ───────────────────────────────────────────────────────────────────
+echo ""
+echo "╔══════════════════════════════════════════════╗"
+echo "║        claude-skill-meter — Report           ║"
+echo "╚══════════════════════════════════════════════╝"
+echo ""
+if [[ -f "$CURRENT" ]]; then
+  STARTED=$(head -1 "$CURRENT" 2>/dev/null | jq -r '.ts // "—"')
+  LAST=$(tail  -1 "$CURRENT" 2>/dev/null | jq -r '.ts // "—"')
+  echo "  Session start : $STARTED"
+  echo "  Last event    : $LAST"
+  echo ""
+fi
+
+echo "── Tool call breakdown ────────────────────────"
+cat $DATAFILES 2>/dev/null | jq -r '.tool' | sort | uniq -c | sort -rn | \
+  awk '{printf "  %-26s %s calls\n", $2, $1}'
+echo ""
+printf "  Total tool calls : %s\n" "$TOTAL_CALLS"
+echo ""
+
+echo "── Token proxy (tool I/O only) ────────────────"
+printf "  Model (pricing)  : %s\n" "$MODEL"
+printf "  Input  tokens    : ~%s\n" "$INPUT_TOKENS"
+printf "  Output tokens    : ~%s\n" "$OUTPUT_TOKENS"
+echo ""
+
+echo "── Estimated tool I/O cost ────────────────────"
+printf "  ~\$%s USD\n" "$COST"
+echo ""
+
+echo "  ┌─────────────────────────────────────────┐"
+echo "  │  ⚠  Model reasoning tokens are NOT      │"
+echo "  │     captured by hooks. This is a lower  │"
+echo "  │     bound on actual cost.               │"
+echo "  │     → console.anthropic.com/usage       │"
+echo "  └─────────────────────────────────────────┘"
+echo ""

@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# claude-skill-meter — PostToolUse hook
+# Appends a JSONL record for each tool use to the current session file.
+#
+# Called automatically by Claude Code after every tool invocation.
+# Receives tool data as JSON via stdin.
+
+set -euo pipefail
+
+SESSION_DIR="${CSM_SESSION_DIR:-${HOME}/.claude-skill-meter}"
+CURRENT="${SESSION_DIR}/current.jsonl"
+MAX_AGE_SECONDS="${CSM_SESSION_MAX_AGE:-21600}" # 6 hours default
+
+mkdir -p "$SESSION_DIR"
+
+# ── Session rotation ────────────────────────────────────────────────────────
+# If current.jsonl exists and is older than MAX_AGE_SECONDS, archive it
+if [[ -f "$CURRENT" ]]; then
+  if [[ "$(uname)" == "Darwin" ]]; then
+    file_mtime=$(stat -f %m "$CURRENT" 2>/dev/null || echo 0)
+  else
+    file_mtime=$(stat -c %Y "$CURRENT" 2>/dev/null || echo 0)
+  fi
+  now=$(date +%s)
+  age=$(( now - file_mtime ))
+  if (( age > MAX_AGE_SECONDS )); then
+    archive="${SESSION_DIR}/session-$(date +%Y%m%d-%H%M%S).jsonl"
+    mv "$CURRENT" "$archive"
+  fi
+fi
+
+# ── Parse hook stdin ─────────────────────────────────────────────────────────
+INPUT=$(cat)
+
+TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+TOOL=$(printf '%s' "$INPUT" | jq -r '.tool_name // "unknown"' 2>/dev/null || echo "unknown")
+INPUT_LEN=$(printf '%s' "$INPUT" | jq -r '(.tool_input | tostring | length)' 2>/dev/null || echo "0")
+OUTPUT_LEN=$(printf '%s' "$INPUT" | jq -r '(.tool_response | tostring | length)' 2>/dev/null || echo "0")
+
+# ── Append record ────────────────────────────────────────────────────────────
+jq -cn \
+  --arg ts        "$TIMESTAMP" \
+  --arg tool      "$TOOL" \
+  --argjson ilen  "${INPUT_LEN:-0}" \
+  --argjson olen  "${OUTPUT_LEN:-0}" \
+  '{ts: $ts, tool: $tool, input_len: $ilen, output_len: $olen}' \
+  >> "$CURRENT"

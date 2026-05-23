@@ -1,0 +1,6 @@
+{
+  "_comment": "USD per 1M tokens. Copy to ~/.claude-skill-meter/pricing.json to override.",
+  "model": "claude-sonnet-4-x",
+  "input_per_1m": "3.00",
+  "output_per_1m": "15.00"
+}
